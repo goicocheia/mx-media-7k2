@@ -16,8 +16,9 @@ from playwright.sync_api import sync_playwright
 BASE = 'https://goicocheia.github.io/mx-media-7k2/'
 # capa pública de cada peça do feed: (dia, hora) -> arquivo no GitHub Pages. Ao agendar peça nova, acrescentar aqui.
 CAPA = {
- (17, '11:31'): 'recusa-1.jpg', (17, '14:30'): 'governanca-1.jpg', (17, '15:30'): 'reel-aftermovie-workshop-capa.jpg',
- (17, '16:30'): 'reel-vozes-ep01-capa.jpg', (17, '17:30'): 'reel-projeto-cerrado-capa.jpg',
+ (17, '11:31'): 'recusa-1.jpg', (17, '14:30'): 'governanca-1.jpg', (17, '14:32'): 'governanca-1.jpg', (17, '15:30'): 'reel-aftermovie-workshop-capa.jpg',
+ (17, '15:32'): 'reel-aftermovie-workshop-capa.jpg', (17, '16:30'): 'reel-vozes-ep01-capa.jpg', (17, '17:30'): 'reel-projeto-cerrado-capa.jpg',
+ (17, '17:32'): 'reel-projeto-cerrado-capa.jpg', (18, '11:31'): 'contratado-1.jpg',
  (18, '11:30'): 'contratado-1.jpg', (18, '14:30'): 'reel-reforma-tributaria-capa.jpg', (18, '17:30'): 'reel-parada-geral-capa.jpg',
  (18, '19:00'): 'reel-vozes-ep02-capa-escura.jpg', (18, '20:30'): 'reel-vozes-ep03-capa-v2.jpg',
  (19, '11:30'): 'decisao-1.jpg', (19, '14:30'): 'reel-vozes-ep04-capa.jpg', (19, '17:30'): 'reel-tres-lagoas-capa.jpg',
@@ -60,11 +61,136 @@ def quadro_story(video, dest):
     subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-ss', '3', '-i', tmp, '-frames:v', '1', '-vf', 'scale=270:-2', '-q:v', '3', dest])
     return os.path.exists(dest)
 
+# ---------------------------------------------------------------- análise do dia anterior (advisor)
+# analise.json:
+# {"data_ref": "17/11", "dia_semana": "terça", "manchete": "uma frase com o veredito",
+#  "kpis": [{"rotulo": "Alcance do perfil", "valor": "35,6 mil", "delta": "+46% vs média de 7 dias", "tom": "bom|ruim|neutro"}],   (até 4)
+#  "pecas": [{"hora": "17:32", "tipo": "reel|post|story|linkedin", "titulo": "...", "alcance": 992, "views": 1289, "curtidas": 39,
+#             "comentarios": 2, "salvos": 4, "compart": 8, "extra": "retenção média 10,0 s", "img": "url opcional"}],
+#  "referencia": {"post": 85, "reel": 640, "story": 30, "linkedin": 0},   (alcance médio dos últimos 14 dias por tipo; 0 = sem base)
+#  "funcionou": ["..."], "nao_funcionou": ["..."], "licoes": ["..."], "proximas": ["..."],
+#  "decisao": "a decisão ou conversa que o Márcio deveria ter hoje", "ressalvas": "limites dos dados (opcional)"}
+TIPO_AN = {'reel': 'REEL', 'post': 'POST', 'story': 'STORY', 'linkedin': 'LINKEDIN'}
+TOM = {'bom': '#0A8F5A', 'ruim': '#C0392B', 'neutro': '#4b5b70'}
+
+
+def num(v):
+    if v is None or v == '':
+        return '–'
+    try:
+        v = float(v)
+    except Exception:
+        return esc(str(v))
+    if v >= 1000:
+        return f'{v / 1000:.1f}'.replace('.', ',') + ' mil'
+    return str(int(v)) if v == int(v) else f'{v:.1f}'.replace('.', ',')
+
+
+def manchete_html(an):
+    if not an or not an.get('manchete'):
+        return ''
+    return (f'<div style="background:#0D1B3E;color:#fff;padding:14px 16px;margin:0 0 16px">'
+            f'<div style="font-size:11px;letter-spacing:.16em;font-weight:700;color:#00D4D6">LEITURA DE ONTEM</div>'
+            f'<div style="font-size:16px;line-height:1.4;margin-top:6px">{esc(an["manchete"])}</div></div>')
+
+
+def renderiza_analise(an, out):
+    pecas = an.get('pecas', [])
+    ref = an.get('referencia', {})
+    mx = max([p.get('alcance') or 0 for p in pecas] + [v or 0 for v in ref.values()] + [1])
+    kpis = ''.join(
+        f'<div style="flex:1;min-width:0;border-top:6px solid {TOM.get(k.get("tom"), TOM["neutro"])};background:#F4F7FC;padding:22px 24px">'
+        f'<div style="font-size:16px;font-weight:700;letter-spacing:.12em;color:#4b5b70;text-transform:uppercase">{esc(k["rotulo"])}</div>'
+        f'<div style="font-size:46px;font-weight:900;color:#0D1B3E;margin-top:8px;line-height:1">{esc(k["valor"])}</div>'
+        f'<div style="font-size:18px;color:{TOM.get(k.get("tom"), TOM["neutro"])};margin-top:10px;font-weight:700">{esc(k.get("delta", ""))}</div></div>'
+        for k in an.get('kpis', [])[:4])
+    linhas = ''
+    for i, p in enumerate(pecas):
+        img = f'<div style="display:flex;align-items:center;justify-content:center;height:100%;font-size:13px;font-weight:700;letter-spacing:.12em;color:#8a94a6">{TIPO_AN.get(p.get("tipo"), "")}</div>'
+        if p.get('img'):
+            f = out / 'img' / f'an{i}.jpg'
+            if baixa(p['img'], str(f)):
+                img = f'<img src="img/an{i}.jpg" style="width:100%;height:100%;object-fit:cover;display:block">'
+        w = round(560 * (p.get('alcance') or 0) / mx)
+        r = ref.get(p.get('tipo'), 0) or 0
+        marca = (f'<div title="média" style="position:absolute;left:{round(560 * r / mx)}px;top:-6px;bottom:-6px;width:3px;background:#C98A00"></div>'
+                 f'<div style="position:absolute;left:{round(560 * r / mx) + 6}px;top:-26px;font-size:14px;color:#8a5a00;white-space:nowrap">média {TIPO_AN.get(p.get("tipo"), "").lower()}: {num(r)}</div>') if r else ''
+        cor = '#0082C8' if (not r or (p.get('alcance') or 0) >= r) else '#8fb3cc'
+        det = ' · '.join(x for x in [
+            f'{num(p.get("views"))} views' if p.get('views') is not None else '',
+            f'{num(p.get("curtidas"))} curtidas' if p.get('curtidas') is not None else '',
+            f'{num(p.get("comentarios"))} coment.' if p.get('comentarios') is not None else '',
+            f'{num(p.get("salvos"))} salvos' if p.get('salvos') is not None else '',
+            f'{num(p.get("compart"))} compart.' if p.get('compart') is not None else '',
+            esc(p.get('extra', ''))] if x)
+        linhas += f"""<div style="display:flex;gap:22px;align-items:center;padding:18px 0;border-bottom:1px solid #e3eaf3">
+ <div style="width:84px;height:105px;flex:none;background:#F4F7FC;border:1px solid #d5deea;overflow:hidden">{img}</div>
+ <div style="flex:1;min-width:0">
+  <div style="font-size:15px;font-weight:700;letter-spacing:.14em;color:#0082C8">{esc(p.get("hora", ""))} · {TIPO_AN.get(p.get("tipo"), "")}</div>
+  <div style="font-size:24px;font-weight:700;color:#0D1B3E;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{esc(p.get("titulo", ""))}</div>
+  <div style="display:flex;align-items:center;gap:16px;margin-top:22px"><div style="position:relative;width:560px;height:20px;background:#eef3f9"><div style="width:{w}px;height:20px;background:{cor}"></div>{marca}</div>
+   <div style="font-size:24px;font-weight:900;color:#0D1B3E">{num(p.get("alcance"))}</div><div style="font-size:15px;color:#6b7a90">alcance</div></div>
+  <div style="font-size:16px;color:#4b5b70;margin-top:8px">{det}</div>
+ </div></div>"""
+    pagina = f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Exo+2:wght@300;400;700;900&display=swap">
+<style>body{{margin:0;background:#fff;font-family:'Exo 2',system-ui,sans-serif}}</style></head><body>
+<div id="c" style="width:1200px;background:#fff">
+ <div style="background:#0D1B3E;padding:40px 60px 36px">
+  <div style="font-size:17px;font-weight:700;letter-spacing:.22em;color:#00D4D6">META.X · ONTEM EM NÚMEROS</div>
+  <div style="font-size:52px;font-weight:900;color:#fff;line-height:1.05;margin-top:10px">{esc((an.get("dia_semana", "") + ", ").capitalize() if an.get("dia_semana") else "")}{esc(an.get("data_ref", ""))}</div>
+ </div>
+ <div style="height:8px;background:linear-gradient(90deg,#0082C8,#00D4D6)"></div>
+ <div style="padding:40px 60px 46px">
+  <div style="display:flex;gap:18px">{kpis}</div>
+  <div style="margin-top:40px;font-size:15px;font-weight:700;letter-spacing:.16em;color:#0082C8">CADA PEÇA · ALCANCE (CONTAS ÚNICAS) CONTRA A MÉDIA DOS ÚLTIMOS 14 DIAS</div>
+  <div style="margin-top:8px">{linhas if linhas else '<div style="font-size:22px;color:#4b5b70;padding:20px 0">Nenhuma peça publicada ontem.</div>'}</div>
+  <div style="margin-top:26px;font-size:15px;color:#6b7a90;line-height:1.5">Fonte: Instagram e LinkedIn via Windsor, lidos às 8h. Números de peças com menos de 24 h ainda vão crescer.</div>
+ </div>
+</div><script>document.fonts.ready.then(()=>{{window.pronto=true}})</script></body></html>"""
+    (out / 'analise.html').write_text(pagina, encoding='utf-8')
+    with sync_playwright() as pw:
+        br = pw.chromium.launch(args=['--allow-file-access-from-files'])
+        pg = br.new_page(viewport={'width': 1200, 'height': 900}, device_scale_factor=1)
+        pg.goto((out / 'analise.html').resolve().as_uri(), wait_until='networkidle')
+        try:
+            pg.wait_for_function('window.pronto===true', timeout=15000)
+        except Exception:
+            pass
+        pg.locator('#c').screenshot(path=str(out / 'analise.png'))
+        br.close()
+    from PIL import Image
+    Image.open(out / 'analise.png').convert('RGB').save(out / 'analise.jpg', 'JPEG', quality=86, optimize=True, progressive=True)
+
+
+def html_analise(an):
+    def bloco(tit, itens, cor):
+        if not itens:
+            return '', ''
+        lis = ''.join(f'<li style="margin:0 0 8px">{esc(x)}</li>' for x in itens)
+        return (f'<p style="margin:18px 0 6px;font-size:12px;letter-spacing:.14em;font-weight:700;color:{cor}">{tit}</p>'
+                f'<ul style="margin:0;padding-left:20px;color:#1d2b45;font-size:14px;line-height:1.5">{lis}</ul>',
+                f'\n\n{tit}\n' + '\n'.join(f'- {x}' for x in itens))
+    partes = [bloco('O QUE FUNCIONOU', an.get('funcionou'), '#0A8F5A'), bloco('O QUE NÃO FUNCIONOU', an.get('nao_funcionou'), '#C0392B'),
+              bloco('LIÇÕES', an.get('licoes'), '#0082C8'), bloco('PARA AS PRÓXIMAS POSTAGENS', an.get('proximas'), '#0D1B3E')]
+    dec = an.get('decisao', '')
+    dec_h = (f'<div style="margin-top:18px;border-left:5px solid #C98A00;background:#fff8e6;padding:12px 14px"><div style="font-size:11px;letter-spacing:.14em;font-weight:700;color:#8a5a00">DECISÃO PARA HOJE</div>'
+             f'<div style="font-size:15px;color:#3d2a00;margin-top:4px;line-height:1.45">{esc(dec)}</div></div>') if dec else ''
+    res = an.get('ressalvas', '')
+    res_h = f'<p style="margin:14px 0 0;color:#6b7a90;font-size:12px;line-height:1.5">Sobre os dados: {esc(res)}</p>' if res else ''
+    h = (f'<div style="margin-top:30px;border-top:3px solid #0082C8;padding-top:16px">'
+         f'<p style="margin:0 0 10px;font-size:13px;letter-spacing:.16em;font-weight:700;color:#0082C8">ANÁLISE DE ONTEM · {esc(an.get("data_ref", ""))}</p>'
+         f'<img src="cid:att1" width="600" alt="Ontem em números" style="width:100%;max-width:600px;height:auto;display:block;border:0">'
+         + ''.join(x[0] for x in partes) + dec_h + res_h + '</div>')
+    t = f'\n\n----\nANÁLISE DE ONTEM ({an.get("data_ref", "")})\n{an.get("manchete", "")}' + ''.join(x[1] for x in partes) + (f'\n\nDECISÃO PARA HOJE\n{dec}' if dec else '')
+    return h, t
+
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('calendario'); ap.add_argument('dia', type=int); ap.add_argument('saida', nargs='?', default='saida-email')
     ap.add_argument('--mes', type=int, default=11); ap.add_argument('--ano', type=int, default=2026)
+    ap.add_argument('--analise', default=None, help='analise.json com as métricas e a leitura do dia anterior')
     a = ap.parse_args()
     M = carrega(a.calendario)
     FEED, STORIES = M['FEED'], M['STORIES']
@@ -206,16 +332,48 @@ def main():
     from PIL import Image
     Image.open(out / 'agenda.png').convert('RGB').save(out / 'agenda.jpg', 'JPEG', quality=86, optimize=True, progressive=True)
 
+    an = json.load(open(a.analise, encoding='utf-8')) if a.analise else None
+    an_html, an_txt = '', ''
+    if an:
+        # capa de cada peça de ontem: a do calendário (mesmo dia, mesmo tipo, horário mais próximo, até 90 min)
+        try:
+            d_ref = int(str(an.get('data_ref', '')).split('/')[0])
+        except Exception:
+            d_ref = None
+        def minutos(h):
+            try:
+                hh, mm = str(h).split(':')[:2]; return int(hh) * 60 + int(mm)
+            except Exception:
+                return None
+        for pc in an.get('pecas', []):
+            if pc.get('img') or d_ref is None or minutos(pc.get('hora')) is None:
+                continue
+            tipo = 'post' if pc.get('tipo') in ('post', 'linkedin') else pc.get('tipo')
+            mesmo = [it for it in FEED if it[0] == d_ref and it[4].strip().lower() == str(pc.get('titulo', '')).strip().lower()]
+            if mesmo and CAPA.get((d_ref, mesmo[0][1])):
+                pc['img'] = BASE + CAPA[(d_ref, mesmo[0][1])]
+                continue
+            cands = [it for it in FEED if it[0] == d_ref and it[2] == tipo and minutos(it[1]) is not None]
+            cands.sort(key=lambda it: abs(minutos(it[1]) - minutos(pc['hora'])))
+            if cands and abs(minutos(cands[0][1]) - minutos(pc['hora'])) <= 90:
+                f = CAPA.get((d_ref, cands[0][1]))
+                if f:
+                    pc['img'] = BASE + f
+        renderiza_analise(an, out)
+        an_html, an_txt = html_analise(an)
+
     # ------------------------------------------------------------ corpo do e-mail
     assunto = f'Meta.X · Programação de {SEMANA[data.weekday()]}, {dd:02d}/{a.mes:02d}' + (f': {resumo}' if resumo else '')
     txt_l = [f'{i["hora"]}  {TIPO[i["kind"]].capitalize()}: {i["titulo"]} ({i["redes"]}) · {STATUS.get(i["status"], "")}' for i in itens]
-    corpo_txt = f'{titulo_dia}\n\n' + ('\n'.join(txt_l) if txt_l else 'Nenhuma peça registrada para hoje.') + '\n\nHorários de Brasília.'
+    corpo_txt = f'{titulo_dia}\n\n' + ('\n'.join(txt_l) if txt_l else 'Nenhuma peça registrada para hoje.') + '\n\nHorários de Brasília.' + an_txt
     tab = ''.join(f'<tr><td style="padding:6px 12px 6px 0;font-weight:700;color:#0D1B3E;white-space:nowrap;vertical-align:top">{i["hora"]}</td>'
                   f'<td style="padding:6px 0;color:#33415C">{TIPO[i["kind"]].capitalize()}: <b>{esc(i["titulo"])}</b> · {esc(i["redes"])} · {STATUS.get(i["status"], "")}</td></tr>' for i in itens)
     corpo_html = f'''<div style="font-family:Arial,Helvetica,sans-serif;max-width:600px">
-<p style="margin:0 0 14px;color:#0D1B3E;font-size:15px">Bom dia! Esta é a programação de postagens da Meta.X para hoje.</p>
+<p style="margin:0 0 14px;color:#0D1B3E;font-size:15px">Bom dia! Esta é a programação de postagens da Meta.X para hoje{", com a leitura do que aconteceu ontem" if an else ""}.</p>
+{manchete_html(an)}
 <img src="cid:att0" width="600" alt="Programação do dia" style="width:100%;max-width:600px;height:auto;display:block;border:0">
 <table style="margin-top:18px;font-size:14px;border-collapse:collapse">{tab}</table>
+{an_html}
 <p style="margin:18px 0 0;color:#6b7a90;font-size:12px">Horários de Brasília. E-mail automático enviado todo dia às 8h.</p></div>'''
     (out / 'assunto.txt').write_text(assunto, encoding='utf-8')
     (out / 'corpo.txt').write_text(corpo_txt, encoding='utf-8')
@@ -224,6 +382,7 @@ def main():
                   'status': i['status'], 'capa': i.get('url_capa', '')} for i in nfeed]
     (out / 'lembretes.json').write_text(json.dumps(lembretes, ensure_ascii=False, indent=1), encoding='utf-8')
     print(json.dumps({'assunto': assunto, 'itens': len(itens), 'jpg_kb': os.path.getsize(out / 'agenda.jpg') // 1024,
+                      'analise_jpg': (out / 'analise.jpg').exists(),
                       'sem_imagem': [i['titulo'] for i in itens if not i['img']]}, ensure_ascii=False))
 
 
